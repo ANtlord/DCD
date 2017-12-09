@@ -46,7 +46,10 @@ import dsymbol.modulecache;
 import dsymbol.symbol;
 import server.autocomplete;
 
-/// Name of the server configuration file
+import core.stdc.stdlib;
+import core.thread;
+
+/// Name of the server configuration file!
 enum CONFIG_FILE_NAME = "dcd.conf";
 
 version(linux) version = useXDG;
@@ -54,12 +57,14 @@ version(BSD) version = useXDG;
 version(FreeBSD) version = useXDG;
 version(OSX) version = useXDG;
 
+extern (C) int daemon(int nochdir, int noclose);
 int main(string[] args)
 {
 	ushort port;
 	bool help;
 	bool printVersion;
 	bool ignoreConfig;
+	string pidPath = null;
 	string[] importPaths;
 	LogLevel level = globalLogLevel;
 	version(Windows)
@@ -79,7 +84,9 @@ int main(string[] args)
 	{
 		getopt(args, "port|p", &port, "I", &importPaths, "help|h", &help,
 			"version", &printVersion, "ignoreConfig", &ignoreConfig,
-			"logLevel", &level, "tcp", &useTCP, "socketFile", &socketFile);
+			"logLevel", &level, "tcp", &useTCP, "socketFile", &socketFile, 
+			"pid", &pidPath,
+		);
 	}
 	catch (ConvException e)
 	{
@@ -135,6 +142,19 @@ int main(string[] args)
 
 	if (!ignoreConfig)
 		importPaths ~= loadConfiguredImportDirs();
+
+	version (Posix) {
+		if (pidPath) {
+			auto res = daemon(0, 0);
+			if(res == -1) {
+				writeln("It can't be daemonized");
+				exit(-1);
+			}
+			auto file = File(pidPath, "w");
+			file.writeln(getpid());
+			file.close;
+		}
+	}
 
 	Socket socket;
 	if (useTCP)
@@ -447,5 +467,11 @@ options:
 
     --socketFile FILENAME
         Use the given FILENAME as the path to the UNIX domain socket. Using
-        this switch is an error on Windows.`, programName);
+        this switch is an error on Windows.
+
+    --pid FILEPATH
+        Path to file UNIX uses to store process id. If pointed DCD is started as
+        daemon.
+        `, programName);
+
 }
