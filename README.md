@@ -1,4 +1,4 @@
-# DCD [![CI status](https://travis-ci.org/Hackerpilot/DCD.svg?branch=master)](https://travis-ci.org/Hackerpilot/DCD/)
+# DCD [![CI status](https://travis-ci.org/dlang-community/DCD.svg?branch=master)](https://travis-ci.org/dlang-community/DCD/)
 The D Completion Daemon is an auto-complete program for the D programming language.
 
 ![Teaser](teaser.png "This is what the future looks like - Jayce, League of Legends")
@@ -17,7 +17,7 @@ calculating autocomplete information, and sending it back to the client.
 This program is reasonably stable. Please report problems on the Github issue
 tracker. Please be sure that you have read the documentation before filing an
 issue. (If you want to help your bug to get fixed faster, you can create a
-[test case](https://github.com/Hackerpilot/DCD/wiki/Testing) that helps isolate
+[test case](https://github.com/dlang-community/DCD/wiki/Testing) that helps isolate
 the issue.)
 
 * Working:
@@ -44,7 +44,7 @@ the issue.)
 ### General
 1. Install a recent D compiler. DCD is tested with DMD 2.068.2, DMD 2.069.0-rc2, and LDC 0.16 (Do not use DMD 2.068.1)
 1. Follow the directions listed below for Homebrew, Git + Make, or Dub, depending on how you would like to build DCD.
-1. Configure your text editor to call the dcd-client program. See the [wiki](https://github.com/Hackerpilot/DCD/wiki/IDEs-and-Editors-with-DCD-support) for information on configuring your specific editor.
+1. Configure your text editor to call the dcd-client program. See the [wiki](https://github.com/dlang-community/DCD/wiki/IDEs-and-Editors-with-DCD-support) for information on configuring your specific editor.
 1. Start the dcd-server program before editing code. (Unless, of course, your editor's plugin handles this for you)
 
 ### Git + Make
@@ -135,6 +135,30 @@ tab character, followed by a completion kind
 	calltip	v
 	getPartByName	f
 
+#### Extended output mode
+You can pass `--extended` to dcd-client to get more information. Output will now be
+escaped (newlines get escaped to `\n`, tabs get escaped to `\t`, backslash gets escaped to `\\`).
+
+Calltips are slightly different here because they first start with the function name instead of
+arguments and the second part will be blank. The actual calltip is now in the third column.
+
+Columns may be empty, in which case there will be multiple tabs next to each other.
+
+The following information will be available in every line for completion in this format then in
+a tab separated format:
+* identifier: raw name of a variable or function, etc
+* kind: empty for calltips, see above for rest
+* definition: function or variable definition string or close approximation for information display purpose
+* symbol location: in which file (or `stdin`) & byte offset this symbol is defined. Separated with a space.
+* documentation: escaped documentation string of this symbol
+
+#### Example `--extended` output
+	identifiers
+	libraryFunction	f	Tuple!long libraryFunction(string s, string s2)	stdin 190	foobar
+	libraryFunction	f	int* libraryFunction(string s)	stdin 99	Hello\nWorld
+	libraryVariable	v	int libraryVariable	stdin 56	My variable
+	libreTypes	g		stdin 298	
+
 #### Note
 DCD's output will start with "identifiers" when completing at a left paren
 character if the keywords *pragma*, *scope*, *__traits*, *extern*, or *version*
@@ -213,6 +237,30 @@ in place of a file being edited.)
 /usr/include/dmd/phobos/std/conv.d  f   9494
 ```
 
+## Find the use of the symbol at the cursor
+```dcd-client --localUse -c 123```
+
+The "--localUse" or "-u" flags cause the client to instruct the server
+to return all the uses, within the same module, of the symbol located at the given cursor position.
+
+#### Output format
+When uses exist, if the source symbol is an identifier (a type, a variable name, etc.)
+and if the symbol is not ambiguous then the first line contains the location of the symbol
+(a file name or literally _stdin_), a tab then the offset to the symbol declaration.
+Following the first line is a list of all known uses of the symbol in the current file.
+The list is composed of lines each containing a single number that indicates the byte offset
+from the start of the file to the i-th use.
+
+Otherwise the client outputs _00000_ so that the length of the answer is guaranteed to be at least 5 bytes.
+
+#### Example output
+```
+stdin 45
+26
+45
+133
+```
+
 #Server
 The server must be running for the DCD client to provide autocomplete information.
 In future versions the client may start the server if it is not running, but for
@@ -240,7 +288,7 @@ What you actually want is this:
 	/usr/include/dmd/druntime/import
 	/usr/include/dmd/phobos
 
-##Shut down the server
+## Shut down the server
 The server can be shut down by running the client with the `--shutdown` option:
 
 	dcd-client --shutdown

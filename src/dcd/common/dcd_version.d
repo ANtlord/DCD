@@ -16,12 +16,12 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-module common.dcd_version;
+module dcd.common.dcd_version;
 
 /**
  * Human-readable version number
  */
-enum DCD_VERSION = "v0.9.0-alpha6";
+enum DCD_VERSION = "v0.9.0";
 
 version (Windows) {}
 else version (built_with_dub) {}

@@ -16,46 +16,32 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-module server.server;
+module dcd.server.main;
 
 import core.sys.posix.sys.stat;
 import std.algorithm;
 import std.array;
 import std.conv;
-import std.datetime;
+import std.datetime.stopwatch : AutoStart, StopWatch;
 import std.exception : enforce;
 import std.experimental.allocator;
 import std.experimental.allocator.mallocator;
 import std.experimental.logger;
 import std.file;
-import std.file;
 import std.getopt;
-import std.path;
+import std.path: buildPath;
 import std.process;
 import std.socket;
 import std.stdio;
 
 import msgpack;
 
-import dsymbol.string_interning;
-
-import common.dcd_version;
-import common.messages;
-import common.socket;
+import dcd.common.dcd_version;
+import dcd.common.messages;
+import dcd.common.socket;
 import dsymbol.modulecache;
-import dsymbol.symbol;
-import server.autocomplete;
-
-import core.stdc.stdlib;
-import core.thread;
-
-/// Name of the server configuration file!
-enum CONFIG_FILE_NAME = "dcd.conf";
-
-version(linux) version = useXDG;
-version(BSD) version = useXDG;
-version(FreeBSD) version = useXDG;
-version(OSX) version = useXDG;
+import dcd.server.autocomplete;
+import dcd.server.server;
 
 int main(string[] args)
 {
@@ -130,7 +116,7 @@ int main(string[] args)
 		return 1;
 	}
 
-	if (serverIsRunning(useTCP, socketFile,  port))
+	if (serverIsRunning(useTCP, socketFile, port))
 	{
 		fatal("Another instance of DCD-server is already running");
 		return 1;
@@ -191,7 +177,7 @@ int main(string[] args)
 			info("Listening at ", socketFile);
 		}
 	}
-	socket.listen(0);
+	socket.listen(32);
 
 	scope (exit)
 	{
@@ -212,7 +198,7 @@ int main(string[] args)
 
 	sw.stop();
 	info(cache.symbolsAllocated, " symbols cached.");
-	info("Startup completed in ", sw.peek().to!("msecs", float), " milliseconds.");
+	info("Startup completed in ", sw.peek().total!"msecs"(), " milliseconds.");
 
 	// No relative paths
 	version (Posix) chdir("/");
@@ -246,9 +232,11 @@ int main(string[] args)
 			s.shutdown(SocketShutdown.BOTH);
 			s.close();
 		}
+
 		ptrdiff_t bytesReceived = s.receive(buffer);
 
-		auto requestWatch = StopWatch(AutoStart.yes);
+		sw.reset();
+		sw.start();
 
 		size_t messageLength;
 		// bit magic!
@@ -272,6 +260,7 @@ int main(string[] args)
 
 		AutocompleteRequest request;
 		msgpack.unpack(buffer[size_t.sizeof .. bytesReceived], request);
+
 		if (request.kind & RequestKind.clearCache)
 		{
 			info("Clearing cache.");
@@ -284,95 +273,63 @@ int main(string[] args)
 		}
 		else if (request.kind & RequestKind.query)
 		{
-			AutocompleteResponse response;
-			response.completionType = "ack";
-			ubyte[] responseBytes = msgpack.pack(response);
-			s.send(responseBytes);
+			s.sendResponse(AutocompleteResponse.ack);
 			continue;
 		}
+
 		if (request.kind & RequestKind.addImport)
 		{
 			cache.addImportPaths(request.importPaths);
 		}
+
 		if (request.kind & RequestKind.listImports)
 		{
 			AutocompleteResponse response;
 			response.importPaths = cache.getImportPaths().map!(a => cast() a).array();
-			ubyte[] responseBytes = msgpack.pack(response);
 			info("Returning import path list");
-			s.send(responseBytes);
+			s.sendResponse(response);
 		}
 		else if (request.kind & RequestKind.autocomplete)
 		{
 			info("Getting completions");
-			AutocompleteResponse response = complete(request, cache);
-			ubyte[] responseBytes = msgpack.pack(response);
-			s.send(responseBytes);
+			s.sendResponse(complete(request, cache));
 		}
 		else if (request.kind & RequestKind.doc)
 		{
 			info("Getting doc comment");
-			try
-			{
-				AutocompleteResponse response = getDoc(request, cache);
-				ubyte[] responseBytes = msgpack.pack(response);
-				s.send(responseBytes);
-			}
-			catch (Exception e)
-			{
-				warning("Could not get DDoc information", e.msg);
-			}
+			s.trySendResponse(getDoc(request, cache), "Could not get DDoc information");
 		}
 		else if (request.kind & RequestKind.symbolLocation)
-		{
-			try
-			{
-				AutocompleteResponse response = findDeclaration(request, cache);
-				ubyte[] responseBytes = msgpack.pack(response);
-				s.send(responseBytes);
-			}
-			catch (Exception e)
-			{
-				warning("Could not get symbol location", e.msg);
-			}
-		}
+			s.trySendResponse(findDeclaration(request, cache), "Could not get symbol location");
 		else if (request.kind & RequestKind.search)
-		{
-			AutocompleteResponse response = symbolSearch(request, cache);
-			ubyte[] responseBytes = msgpack.pack(response);
-			s.send(responseBytes);
-		}
-		info("Request processed in ", requestWatch.peek().to!("msecs", float), " milliseconds");
+			s.sendResponse(symbolSearch(request, cache));
+		else if (request.kind & RequestKind.localUse)
+			s.trySendResponse(findLocalUse(request, cache), "Couldnot find local usage");
+
+		sw.stop();
+		info("Request processed in ", sw.peek().total!"msecs"(), " milliseconds");
 	}
 	return 0;
 }
 
-/**
- * Locates the configuration file
- */
-string getConfigurationLocation()
+/// Lazily evaluates a response with an exception handler and sends it to a socket or logs msg if evaluating response fails.
+void trySendResponse(Socket socket, lazy AutocompleteResponse response, lazy string msg)
 {
-	version (useXDG)
+	try
 	{
-		string configDir = environment.get("XDG_CONFIG_HOME", null);
-		if (configDir is null)
-		{
-			configDir = environment.get("HOME", null);
-			if (configDir !is null)
-				configDir = buildPath(configDir, ".config", "dcd", CONFIG_FILE_NAME);
-			if (!exists(configDir))
-				configDir = buildPath("/etc/", CONFIG_FILE_NAME);
-		}
-		else
-		{
-			configDir = buildPath(configDir, "dcd", CONFIG_FILE_NAME);
-		}
-		return configDir;
+		sendResponse(socket, response);
 	}
-	else version(Windows)
+	catch (Exception e)
 	{
-		return CONFIG_FILE_NAME;
+		warningf("%s: %s", msg, e.msg);
 	}
+}
+
+/// Packs an AutocompleteResponse and sends it to a socket.
+void sendResponse(Socket socket, AutocompleteResponse response)
+{
+	ubyte[] responseBytes = msgpack.pack(response);
+	socket.send(responseBytes);
 }
 
 /// IP v4 address as bytes and a uint
@@ -382,22 +339,6 @@ union IPv4Union
 	ubyte[4] b;
 	/// the uint
 	uint i;
-}
-
-/**
- * Prints a warning message to the user when an old config file is detected.
- */
-void warnAboutOldConfigLocation()
-{
-	version (linux) if ("~/.config/dcd".expandTilde().exists()
-		&& "~/.config/dcd".expandTilde().isFile())
-	{
-		warning("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
-		warning("!! Upgrade warning:");
-		warning("!! '~/.config/dcd' should be moved to '$XDG_CONFIG_HOME/dcd/dcd.conf'");
-		warning("!! or '$HOME/.config/dcd/dcd.conf'");
-		warning("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
-	}
 }
 
 import std.regex : ctRegex;
@@ -410,31 +351,6 @@ private unittest
 	enum input = `${HOME}/aaa/${_bb_b}/ccc`;
 
 	assert(replaceAll!(m => m[1])(input, envVarRegex) == `HOME/aaa/_bb_b/ccc`);
-}
-
-/**
- * Loads import directories from the configuration file
- */
-string[] loadConfiguredImportDirs()
-{
-	string expandEnvVars(string l)
-	{
-		import std.regex : replaceAll;
-		return replaceAll!(m => environment.get(m[1], ""))(l, envVarRegex);
-	}
-
-	warnAboutOldConfigLocation();
-	immutable string configLocation = getConfigurationLocation();
-	if (!configLocation.exists())
-		return [];
-	info("Loading configuration from ", configLocation);
-	File f = File(configLocation, "rt");
-	return f.byLine(KeepTerminator.no)
-		.filter!(a => a.length > 0 && a[0] != '#')
-		.map!(a => a.idup)
-		.map!(expandEnvVars)
-		.filter!(a => existanceCheck(a))
-		.array();
 }
 
 /**
