@@ -57,7 +57,6 @@ version(BSD) version = useXDG;
 version(FreeBSD) version = useXDG;
 version(OSX) version = useXDG;
 
-extern (C) int daemon(int nochdir, int noclose);
 int main(string[] args)
 {
 	ushort port;
@@ -143,17 +142,22 @@ int main(string[] args)
 	if (!ignoreConfig)
 		importPaths ~= loadConfiguredImportDirs();
 
-	version (Posix) {
-		if (pidPath) {
-			auto res = daemon(0, 0);
-			if(res == -1) {
-				writeln("It can't be daemonized");
-				exit(-1);
-			}
-			auto file = File(pidPath, "w");
-			file.writeln(getpid());
-			file.close;
+	if (pidPath) {
+		string[] newArgs = [
+			args[0],
+			"--port", port.to!string,
+			"--logLevel", level.to!string,
+			"--socketFile", socketFile,
+		] ~ importPaths.map!((a) => "-I" ~ a).array;
+		if (useTCP) {
+			newArgs ~= "--tcp";
 		}
+		auto pid = spawnProcess(newArgs);
+		auto file = File(pidPath, "w");
+		writeln(pid.processID);
+		file.write(pid.processID);
+		file.close;
+		return 0;
 	}
 
 	Socket socket;
